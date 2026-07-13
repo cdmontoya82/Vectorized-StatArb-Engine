@@ -91,10 +91,15 @@ class PairsTradingBacktester:
         return equity_curve.iloc[-1] - 1  # final cumulative return as a scalar
 
     def run_monte_carlo(self):
-        """Validates strategy robustness by perturbing parameters."""
+        """
+        Validates strategy robustness by perturbing parameters and tracing the
+        full equity path (not just the final return) across all simulations.
+        Produces a probabilistic equity-path chart with a 10%-90% confidence
+        band and the median trajectory — matches monte_carlo_chart.png.
+        """
         print(f"🎲 Iniciando Monte Carlo ({self.sim['monte_carlo_runs']} iteraciones)...")
-        results = []
         var = self.sim['param_variation']
+        all_curves = []
 
         for _ in range(self.sim['monte_carlo_runs']):
             # Perturb parameters by +/- var, except window_size (kept fixed/integer)
@@ -102,14 +107,28 @@ class PairsTradingBacktester:
                 k: (v if k in self._NON_PERTURBABLE_PARAMS else v * np.random.uniform(1 - var, 1 + var))
                 for k, v in self.params.items()
             }
-            results.append(self.run_backtest(rand_params))
+            curve = self.run_backtest(rand_params, return_series=True)['equity_curve']
+            all_curves.append(curve)
 
-        plt.figure(figsize=(10, 5))
-        plt.hist(results, bins=30, color='purple', alpha=0.7)
-        plt.title("Monte Carlo Robustness Validation (Strategy Sensitivity)")
-        plt.xlabel("Cumulative Return")
-        plt.ylabel("Frequency")
+        # Aggregate trajectories
+        df_curves = pd.concat(all_curves, axis=1)
+        df_curves = df_curves.apply(pd.to_numeric, errors='coerce').fillna(1.0)
+
+        x_axis = df_curves.index.to_numpy()
+        median = df_curves.median(axis=1).to_numpy(dtype=float)
+        p10 = df_curves.quantile(0.1, axis=1).to_numpy(dtype=float)
+        p90 = df_curves.quantile(0.9, axis=1).to_numpy(dtype=float)
+
+        plt.figure(figsize=(12, 6))
+        plt.fill_between(x_axis, p10, p90, color='purple', alpha=0.2, label='Confidence Interval (10%-90%)')
+        plt.plot(x_axis, median, color='purple', linewidth=2, label='Median Strategy Path')
+
+        plt.title("Monte Carlo: Probabilistic Equity Path (Strategy Uncertainty Analysis)")
+        plt.xlabel("Date")
+        plt.ylabel("Equity Growth (1.0 = Base)")
+        plt.legend()
         plt.grid(True, alpha=0.3)
+        plt.savefig('monte_carlo_chart.png', dpi=120)
         plt.show()
 
     def plot_results(self):
