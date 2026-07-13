@@ -32,6 +32,37 @@ $$Z_t = \frac{Spread_t - \mu_t}{\sigma_t}$$
 
 ---
 
+## 🔬 Statistical Validation
+
+Before trusting any backtest, this engine forces you to answer a prior question: **is this pair actually cointegrated, or does it just look correlated over the sample you happened to pick?** `validate_pair()` runs four checks against `stat_validation.py`:
+
+| Test | Question it answers | Method |
+|---|---|---|
+| Engle-Granger | Are `asset_y` and `asset_x` cointegrated over the full sample? | `statsmodels.tsa.stattools.coint` |
+| ADF on the spread | Is the spread itself stationary (mean-reverting), not just correlated? | Augmented Dickey-Fuller |
+| Half-life | How many days does it take the spread to revert halfway to its mean? | AR(1) regression on spread differences |
+| Rolling cointegration p-value | Does the relationship hold up over time, or does it break down in sub-periods a single full-sample test would hide? | Engle-Granger recomputed on a rolling `rolling_coint_window` |
+
+![Cointegration Stability](cointegration_stability.png)
+
+**How to read it:** the green band marks p-values below the significance threshold (default 5%) — periods where cointegration is statistically supported. If the p-value line spends long stretches above the red dashed line, the relationship is unstable and any strategy built on it is fragile, regardless of how good a single full-sample backtest looks.
+
+If `validate_pair()` prints a warning that the pair fails cointegration or stationarity, treat any subsequent backtest results as illustrative only — trading that pair would be a bet on correlation persisting, not a validated statistical edge.
+
+### Walk-Forward (Out-of-Sample) Check
+
+`run_walk_forward()` splits the data at `train_fraction` (default 70%) and evaluates return and Sharpe ratio on the train and test segments **independently**:
+
+```
+Segment     Period                          Return    Sharpe
+Train       2020-01-01 -> 2022-09-14         12.40%      0.85
+Test        2022-09-15 -> 2024-01-01          3.10%      0.22
+```
+
+A strategy whose out-of-sample Sharpe collapses relative to train (the engine flags this automatically) is a sign the edge may be regime-specific rather than structural — an essential caveat before presenting results as evidence of a working strategy.
+
+---
+
 ## 📊 Strategy Performance Analysis
 
 The engine generates a dual-plot dashboard designed to provide visual evidence of statistical stationarity.
@@ -116,6 +147,9 @@ All strategy, market, and simulation parameters live in `config.json`:
 | `portfolio` | `asset_y` / `asset_x` | Tickers for the pair (must be cointegrated) |
 | `simulation_params` | `monte_carlo_runs` | Number of Monte Carlo iterations |
 | | `param_variation` | +/- fractional range used to perturb `trading_params` (except `window_size`) |
+| `validation_params` | `rolling_coint_window` | Window (days) for the rolling Engle-Granger cointegration test |
+| | `significance` | p-value threshold for cointegration/stationarity tests (default `0.05`) |
+| | `train_fraction` | Fraction of the sample used as the "train" segment in `run_walk_forward()` |
 
 Swap `asset_y` / `asset_x` for any other cointegrated pair, and adjust the date range or thresholds as needed — no code changes required.
 
@@ -127,8 +161,10 @@ python backtester.py
 
 This will:
 1. Download historical price data for the configured pair via `yfinance`.
-2. Run a single backtest and render the dual-panel dashboard (`performance_chart.png`), printing the estimated cumulative return.
-3. Run the Monte Carlo robustness simulation and display a histogram of cumulative returns across perturbed parameter sets.
+2. **Validate the pair statistically** (`validate_pair()`) — cointegration, stationarity, half-life, and rolling stability — and print a warning if the pair doesn't hold up.
+3. Run a **walk-forward check** (`run_walk_forward()`), comparing train vs. out-of-sample performance.
+4. Run a single backtest and render the dual-panel dashboard (`performance_chart.png`), printing the estimated cumulative return.
+5. Run the Monte Carlo robustness simulation and render the probabilistic equity path (`monte_carlo_chart.png`).
 
 ---
 
