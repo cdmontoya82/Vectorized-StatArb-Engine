@@ -1,0 +1,17 @@
+{
+"trading_params": {
+"z_entry": 2.0,
+"z_exit": 0.5,
+"z_stop": 3.5,
+"window_size": 30
+},
+"market_data": {
+"start_date": "2020-01-01",
+"end_date": "2024-01-01",
+"transaction_cost": 0.001
+},
+"portfolio": {
+"asset_y": "KO",
+"asset_x": "PEP"
+}
+}
