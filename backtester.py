@@ -12,6 +12,8 @@ import numpy as np
 import json
 import matplotlib.pyplot as plt
 
+import stat_validation as sv
+
 
 class PairsTradingBacktester:
 
@@ -27,6 +29,7 @@ class PairsTradingBacktester:
         self.market = self.config['market_data']
         self.portfolio = self.config['portfolio']
         self.sim = self.config['simulation_params']
+        self.validation = self.config.get('validation_params', {})
         self.df = pd.DataFrame()
 
     def fetch_data(self):
@@ -89,6 +92,107 @@ class PairsTradingBacktester:
             return {'z_score': z_score, 'equity_curve': equity_curve}
 
         return equity_curve.iloc[-1] - 1  # final cumulative return as a scalar
+
+    def validate_pair(self, plot=True):
+        """
+        Statistical validation layer: confirms the pair is actually cointegrated
+        and mean-reverting before trusting the z-score strategy on it. Runs:
+          - Engle-Granger cointegration test (full sample)
+          - ADF stationarity test on the spread
+          - Half-life of mean reversion
+          - Rolling cointegration p-value (stability over time)
+        """
+        y = self.df[self.portfolio['asset_y']]
+        x = self.df[self.portfolio['asset_x']]
+        window = self.validation.get('rolling_coint_window', 252)
+        significance = self.validation.get('significance', 0.05)
+
+        report = sv.validation_report(y, x, window=window, significance=significance)
+        eg, adf = report['engle_granger'], report['adf_spread']
+
+        print("=" * 60)
+        print("🔬 STATISTICAL VALIDATION REPORT")
+        print("=" * 60)
+        print(f"Static hedge ratio (full sample OLS): {report['static_hedge_ratio']:.4f}")
+        print(f"\nEngle-Granger cointegration test:")
+        print(f"  p-value = {eg['p_value']:.4f}  ->  cointegrated: {eg['is_cointegrated']}")
+        print(f"\nADF test on spread:")
+        print(f"  p-value = {adf['p_value']:.4f}  ->  stationary: {adf['is_stationary']}")
+        print(f"\nHalf-life of mean reversion: {report['half_life_days']:.1f} days")
+
+        if not eg['is_cointegrated'] or not adf['is_stationary']:
+            print("\n⚠️  WARNING: this pair does not show statistically significant")
+            print("    cointegration/stationarity at the full-sample level. Trading it")
+            print("    is a bet on correlation persisting, not a validated mean-reversion")
+            print("    edge. Consider a different pair or a shorter, more stable subperiod.")
+        print("=" * 60)
+
+        if plot:
+            rolling_p = sv.rolling_cointegration_pvalue(y, x, window=window)
+            plt.figure(figsize=(12, 5))
+            plt.plot(rolling_p.index, rolling_p, color='steelblue', linewidth=1, label='Rolling Engle-Granger p-value')
+            plt.axhline(significance, color='red', linestyle='--', linewidth=1, label=f'Significance ({significance})')
+            plt.fill_between(rolling_p.index, 0, significance, color='green', alpha=0.1)
+            plt.title(f"Cointegration Stability Over Time (rolling {window}-day window)")
+            plt.xlabel("Date")
+            plt.ylabel("Engle-Granger p-value")
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.savefig('cointegration_stability.png', dpi=120)
+            plt.show()
+
+        return report
+
+    @staticmethod
+    def _sharpe_from_equity(equity_curve, periods_per_year=252):
+        """Annualized Sharpe ratio (rf=0) from a cumulative equity curve."""
+        daily_ret = equity_curve.pct_change().dropna()
+        if daily_ret.std() == 0 or daily_ret.empty:
+            return np.nan
+        return (daily_ret.mean() / daily_ret.std()) * np.sqrt(periods_per_year)
+
+    def run_walk_forward(self, train_fraction=None):
+        """
+        Out-of-sample validation: calibrates nothing extra (parameters stay as
+        configured), but evaluates the strategy separately on a train segment
+        and a held-out test segment. A strategy that performs well in-sample but
+        collapses out-of-sample is a red flag for regime dependence / overfitting.
+        """
+        train_fraction = train_fraction if train_fraction is not None else self.validation.get('train_fraction', 0.7)
+        split_idx = int(len(self.df) * train_fraction)
+        split_date = self.df.index[split_idx]
+
+        original_df = self.df
+        try:
+            self.df = original_df.iloc[:split_idx]
+            train_series = self.run_backtest(return_series=True)
+            train_ret = train_series['equity_curve'].iloc[-1] - 1
+            train_sharpe = self._sharpe_from_equity(train_series['equity_curve'])
+
+            self.df = original_df.iloc[split_idx:]
+            test_series = self.run_backtest(return_series=True)
+            test_ret = test_series['equity_curve'].iloc[-1] - 1
+            test_sharpe = self._sharpe_from_equity(test_series['equity_curve'])
+        finally:
+            self.df = original_df  # always restore, even if something raises
+
+        print("=" * 60)
+        print(f"🧪 WALK-FORWARD VALIDATION (split at {split_date.date()})")
+        print("=" * 60)
+        print(f"{'Segment':<12}{'Period':<28}{'Return':>10}{'Sharpe':>10}")
+        print(f"{'Train':<12}{str(original_df.index[0].date())+' -> '+str(original_df.index[split_idx-1].date()):<28}{train_ret:>10.2%}{train_sharpe:>10.2f}")
+        print(f"{'Test':<12}{str(original_df.index[split_idx].date())+' -> '+str(original_df.index[-1].date()):<28}{test_ret:>10.2%}{test_sharpe:>10.2f}")
+
+        if np.isfinite(train_sharpe) and np.isfinite(test_sharpe) and train_sharpe > 0 and test_sharpe < train_sharpe * 0.3:
+            print("\n⚠️  WARNING: out-of-sample Sharpe collapses relative to train segment.")
+            print("    This suggests the edge may be regime-specific rather than structural.")
+        print("=" * 60)
+
+        return {
+            'split_date': split_date,
+            'train': {'return': train_ret, 'sharpe': train_sharpe},
+            'test': {'return': test_ret, 'sharpe': test_sharpe},
+        }
 
     def run_monte_carlo(self):
         """
@@ -169,5 +273,7 @@ class PairsTradingBacktester:
 if __name__ == "__main__":
     bt = PairsTradingBacktester()
     bt.fetch_data()
+    bt.validate_pair()      # confirm cointegration/stationarity BEFORE trusting the strategy
+    bt.run_walk_forward()   # out-of-sample sanity check
     bt.plot_results()
     bt.run_monte_carlo()
