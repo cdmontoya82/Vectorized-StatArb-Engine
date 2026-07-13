@@ -4,21 +4,52 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 ![Status](https://img.shields.io/badge/Status-Production--Ready-brightgreen.svg)
 
-An institutional-grade, highly optimized backtesting engine designed to execute Pairs Trading strategies based on financial asset cointegration.
+An institutional-grade, highly optimized backtesting engine designed to execute **Pairs Trading** strategies based on financial asset cointegration. This engine is built to identify market inefficiencies, mitigate systemic risk via market neutrality, and execute with sub-millisecond precision.
+
+---
 
 ## 🧠 Quant Architecture & Mathematics
 
-Unlike directional trading approaches, this engine extracts alpha from the relative relationship between two cointegrated assets (e.g., KO vs. PEP), insulating the portfolio from systemic market risk (**Market Neutrality**).
+Unlike directional trading models, this engine generates **Alpha** by exploiting the mean-reversion properties of cointegrated assets. 
+
+### Mathematical Foundations
+The model utilizes a **Rolling OLS (Ordinary Least Squares)** regression to determine the optimal hedge ratio ($\beta$), maintaining a delta-neutral portfolio:
+
+$$Spread_t = Y_t - (\beta \cdot X_t)$$
+
+To trigger trades, we calculate the **Z-Score** of the spread, ensuring our entries are based on statistical extremity relative to the rolling mean ($\mu$) and standard deviation ($\sigma$):
+
+$$Z_t = \frac{Spread_t - \mu_t}{\sigma_t}$$
 
 ### Institutional Features:
-*   **Dynamic Hedge Ratio (Rolling OLS):** The algorithm calculates moving variance and covariance to adjust the hedge weight daily. This strictly eliminates **Look-Ahead Bias**, ensuring the model only makes decisions based on historically available data at time T.
-*   **Integrated Hard Stop-Loss:** Incorporates a strict risk topology. If the spread suffers an exogenous shock and the Z-Score breaches a critical threshold (e.g., Z > 3.5), the engine assumes a breakdown in cointegration and automatically liquidates the portfolio to prevent severe drawdowns.
-*   **Real-World Friction:** Factors in transaction costs (slippage and commissions in basis points) every time a position is opened or closed, simulating actual broker conditions.
-*   **Vectorized Engine:** Zero `for` loops. All signal evaluation and return calculations are executed via matrix transformations in Pandas, allowing the backtesting of decades of tick data in milliseconds.
+*   **Dynamic Hedge Ratio:** Prevents Look-Ahead Bias by calculating rolling covariance and variance, ensuring the model only uses historically available data.
+*   **Integrated Hard Stop-Loss:** A risk-topology safeguard. When $\vert{}Z_t\vert{} > 3.5$, the engine assumes a breakdown in cointegration and triggers an emergency liquidation to protect capital.
+*   **Market Neutrality:** By holding offsetting positions in correlated assets (e.g., KO/PEP), the strategy remains insulated from broad market beta.
+*   **Vectorized Engine:** Optimized for performance; zero `for` loops. The entire pipeline leverages Pandas matrix transformations for high-frequency backtesting capabilities.
+
+---
+
+## 📊 Strategy Performance Analysis
+
+The engine generates a dual-plot dashboard designed to provide visual evidence of statistical stationarity.
+
+![Statistical Risk Mapping](performance_chart.png)
+
+### 1. Statistical Risk Mapping (Upper Chart)
+*   **Z-Score (Blue Line):** Quantifies the deviation from the rolling mean.
+*   **Entry Thresholds ($\pm 2.0\sigma$):** Automated signals for opening positions.
+*   **Exit Zone (Gray Band):** The target state where the spread reverts to its historical fair value.
+*   **Hard Stop-Loss ($\pm 3.5\sigma$):** Critical risk mitigation logic.
+
+### 2. Equity Curve (Lower Chart)
+*   **Drawdown Mitigation:** Illustrates how the model survives market shocks (e.g., March 2020) by capping exposure via the Stop-Loss logic.
+*   **Real-World Friction:** Performance accounts for 10 Bps transaction costs, proving strategy viability in real broker conditions.
+
+---
 
 ## 🚀 Quick Start
 
-The system is packaged in a highly modular OOP class. 
-
+### 1. Prerequisites
+Ensure you have the required libraries installed:
 ```bash
 pip install -r requirements.txt
