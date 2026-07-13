@@ -13,6 +13,7 @@ import json
 import matplotlib.pyplot as plt
 
 import stat_validation as sv
+import performance_metrics as pm
 
 
 class PairsTradingBacktester:
@@ -31,13 +32,19 @@ class PairsTradingBacktester:
         self.sim = self.config['simulation_params']
         self.validation = self.config.get('validation_params', {})
         self.df = pd.DataFrame()
+        self.benchmark_prices = None
 
     def fetch_data(self):
-        """Downloads adjusted close data using vectorized yfinance calls."""
+        """Downloads adjusted close data for the pair and, if configured, a benchmark ticker."""
         assets = [self.portfolio['asset_y'], self.portfolio['asset_x']]
-        print(f"📡 Downloading market data for: {assets}...")
-        data = yf.download(assets, start=self.market['start_date'], end=self.market['end_date'])['Close']
-        self.df = data.dropna()
+        benchmark = self.market.get('benchmark_ticker')
+        tickers = assets + ([benchmark] if benchmark else [])
+
+        print(f"📡 Downloading market data for: {tickers}...")
+        data = yf.download(tickers, start=self.market['start_date'], end=self.market['end_date'])['Close'].dropna()
+
+        self.df = data[assets]
+        self.benchmark_prices = data[benchmark] if benchmark else None
 
     def run_backtest(self, custom_params=None, return_series=False):
         """
@@ -89,7 +96,7 @@ class PairsTradingBacktester:
         equity_curve = final_ret.cumsum() + 1  # +1 so the curve starts at 1.0 (base capital)
 
         if return_series:
-            return {'z_score': z_score, 'equity_curve': equity_curve}
+            return {'z_score': z_score, 'equity_curve': equity_curve, 'pos': pos, 'strat_ret': final_ret}
 
         return equity_curve.iloc[-1] - 1  # final cumulative return as a scalar
 
@@ -235,15 +242,53 @@ class PairsTradingBacktester:
         plt.savefig('monte_carlo_chart.png', dpi=120)
         plt.show()
 
-    def plot_results(self):
-        """Plots the base strategy performance: Z-Score risk map + Equity curve."""
+    def generate_performance_report(self):
+        """
+        Computes institutional-style performance/risk metrics (Sharpe, Sortino,
+        Calmar, VaR/CVaR, drawdown, beta vs benchmark, trade-level stats) and
+        renders a 3-panel dashboard: Z-Score risk map, Equity curve, Drawdown.
+        """
         series = self.run_backtest(return_series=True)
-        z_score = series['z_score']
-        equity = series['equity_curve']
+        z_score, equity, pos, strat_ret = series['z_score'], series['equity_curve'], series['pos'], series['strat_ret']
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+        benchmark_ret = None
+        if self.benchmark_prices is not None:
+            benchmark_ret = self.benchmark_prices.pct_change().reindex(equity.index)
 
-        # --- Upper chart: Statistical Risk Mapping ---
+        report = pm.compute_full_report(equity, pos, strat_ret, benchmark_returns=benchmark_ret)
+
+        def pct(v):
+            return f"{v:.2%}" if pd.notna(v) else "N/A"
+
+        def num(v):
+            return f"{v:.2f}" if pd.notna(v) and np.isfinite(v) else "N/A"
+
+        print("=" * 60)
+        print("📈 PERFORMANCE & RISK REPORT")
+        print("=" * 60)
+        print(f"Annualized Return:        {pct(report['annualized_return'])}")
+        print(f"Sharpe Ratio:             {num(report['sharpe_ratio'])}")
+        print(f"Sortino Ratio:            {num(report['sortino_ratio'])}")
+        print(f"Calmar Ratio:             {num(report['calmar_ratio'])}")
+        print(f"Max Drawdown:             {pct(report['max_drawdown'])}  "
+              f"(duration: {report['drawdown_duration_days']} days)" if report['drawdown_duration_days'] is not None
+              else f"Max Drawdown:             {pct(report['max_drawdown'])}  (not yet recovered)")
+        print(f"VaR 95% (daily):          {pct(report['var_95'])}")
+        print(f"CVaR 95% (daily):         {pct(report['cvar_95'])}")
+        if report['beta_vs_benchmark'] is not None:
+            bench_name = self.market.get('benchmark_ticker', 'benchmark')
+            print(f"Beta vs {bench_name}:              {num(report['beta_vs_benchmark'])}")
+        print(f"\nNumber of Trades:         {report['n_trades']}")
+        print(f"Win Rate:                 {pct(report['win_rate'])}")
+        print(f"Profit Factor:            {num(report['profit_factor'])}")
+        print(f"Avg Win / Avg Loss:       {pct(report['avg_win'])} / {pct(report['avg_loss'])}")
+        print(f"Avg Holding Period:       {num(report['avg_holding_days'])} days")
+        print(f"Turnover (avg |Δpos|):    {report['turnover']:.3f}")
+        print("=" * 60)
+
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+
+        # --- Panel 1: Statistical Risk Mapping ---
         ax1.plot(z_score.index, z_score, color='steelblue', linewidth=1, label='Z-Score')
         ax1.axhline(self.params['z_entry'], color='red', linestyle='--', linewidth=1, label='Entry (+/-)')
         ax1.axhline(-self.params['z_entry'], color='red', linestyle='--', linewidth=1)
@@ -255,25 +300,31 @@ class PairsTradingBacktester:
         ax1.legend(loc='upper right', fontsize=8)
         ax1.grid(True, alpha=0.3)
 
-        # --- Lower chart: Equity Curve ---
+        # --- Panel 2: Equity Curve ---
         ax2.plot(equity.index, equity, color='purple', linewidth=1.5)
         ax2.set_title("Equity Curve")
-        ax2.set_xlabel("Date")
         ax2.set_ylabel("Equity Growth (1.0 = Base)")
         ax2.grid(True, alpha=0.3)
+
+        # --- Panel 3: Drawdown ---
+        dd_series = report['drawdown_series'] * 100
+        ax3.fill_between(dd_series.index, dd_series, 0, color='firebrick', alpha=0.4)
+        ax3.set_title("Drawdown")
+        ax3.set_ylabel("Drawdown (%)")
+        ax3.set_xlabel("Date")
+        ax3.grid(True, alpha=0.3)
 
         plt.tight_layout()
         plt.savefig('performance_chart.png', dpi=120)
         plt.show()
 
-        final_ret = equity.iloc[-1] - 1
-        print(f"✅ Backtest finalizado. Retorno estimado: {final_ret:.2%}")
+        return report
 
 
 if __name__ == "__main__":
     bt = PairsTradingBacktester()
     bt.fetch_data()
-    bt.validate_pair()      # confirm cointegration/stationarity BEFORE trusting the strategy
-    bt.run_walk_forward()   # out-of-sample sanity check
-    bt.plot_results()
+    bt.validate_pair()               # confirm cointegration/stationarity BEFORE trusting the strategy
+    bt.run_walk_forward()            # out-of-sample sanity check
+    bt.generate_performance_report() # institutional metrics + 3-panel dashboard
     bt.run_monte_carlo()
