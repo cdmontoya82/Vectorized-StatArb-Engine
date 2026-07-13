@@ -52,6 +52,21 @@ The engine generates a dual-plot dashboard designed to provide visual evidence o
 
 ---
 
+## 🎲 Monte Carlo Robustness Analysis
+
+A single backtest only shows how the strategy performed under *one* specific set of thresholds. To answer "how sensitive is this strategy to my parameter choices?", the engine runs hundreds of simulations (`monte_carlo_runs`), each with `z_entry`, `z_exit`, and `z_stop` randomly perturbed by `param_variation` (`window_size` is kept fixed, since it defines the rolling calculation itself rather than a trading threshold).
+
+![Monte Carlo Probabilistic Equity Path](monte_carlo_chart.png)
+
+Instead of reducing each simulation to a single final number, the engine traces the **full equity path** of every run and aggregates them day by day into:
+
+- **Median Strategy Path (solid line):** The typical trajectory across all perturbed parameter sets — a more honest estimate of expected performance than any single backtest.
+- **Confidence Interval, 10%-90% (shaded band):** The range within which 80% of simulated outcomes fall at each point in time. A **narrow band** means the strategy is robust to small changes in thresholds; a **wide band** means performance is highly sensitive to the exact parameters chosen — a warning sign of overfitting to the base configuration.
+
+This is the key difference between a backtest and a robustness analysis: the single-run dashboard above tells you what happened with *one* configuration, while this chart tells you what would likely happen across a *neighborhood* of reasonable configurations.
+
+---
+
 ## 🚀 Quick Start
 
 ### 1. Prerequisites
