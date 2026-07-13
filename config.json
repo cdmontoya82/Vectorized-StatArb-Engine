@@ -17,5 +17,10 @@
   "simulation_params": {
     "monte_carlo_runs": 500,
     "param_variation": 0.1
+  },
+  "validation_params": {
+    "rolling_coint_window": 252,
+    "significance": 0.05,
+    "train_fraction": 0.7
   }
 }
